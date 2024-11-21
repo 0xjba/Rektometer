@@ -19,7 +19,7 @@ export function Header({ wallet }: HeaderProps) {
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-2">
             <Terminal className="h-8 w-8" />
-            <h1 className="text-2xl font-mono font-bold tracking-tight">RECKOMETER</h1>
+            <h1 className="text-2xl font-mono font-bold tracking-tight">REKTOMETER</h1>
           </div>
           
           {wallet.error && (
