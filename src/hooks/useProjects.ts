@@ -1,18 +1,32 @@
-// hooks/useProjects.ts
 import { useState, useCallback, useEffect } from 'react';
 import { ethers } from 'ethers';
-import { toast } from 'react-hot-toast';
 import { RECKOMETER_ADDRESS, RECKOMETER_ABI } from '../config/contract';
+import { checkIsCorrectNetwork } from './useWallet';
 import type { Project } from '../types';
 
-export function useProjects() {
+interface UseProjectsReturn {
+  projects: Project[];
+  isLoading: boolean;
+  error: string | null;
+  isSubmitting: boolean;
+  voteForProject: (projectId: string) => Promise<void>;
+  addProject: (name: string, description: string) => Promise<void>;
+}
+
+export function useProjects(walletAddress: string | null): UseProjectsReturn {
   const [projects, setProjects] = useState<Project[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const getContract = useCallback(async (withSigner = false) => {
-    if (!window.ethereum) throw new Error('No Web3 provider found');
+    if (!window.ethereum || !walletAddress) return null;
+    
+    const isCorrectNetwork = await checkIsCorrectNetwork();
+    if (!isCorrectNetwork) {
+      setError('Please switch to TEN Network');
+      return null;
+    }
     
     const provider = new ethers.BrowserProvider(window.ethereum);
     if (withSigner) {
@@ -20,13 +34,21 @@ export function useProjects() {
       return new ethers.Contract(RECKOMETER_ADDRESS, RECKOMETER_ABI, signer);
     }
     return new ethers.Contract(RECKOMETER_ADDRESS, RECKOMETER_ABI, provider);
-  }, []);
+  }, [walletAddress]);
 
   const fetchProjects = useCallback(async () => {
+    if (!walletAddress) {
+      setProjects([]);
+      setError(null);
+      return;
+    }
+
     try {
+      const contract = await getContract();
+      if (!contract) return;
+
       setIsLoading(true);
       setError(null);
-      const contract = await getContract();
 
       const [names, descriptions, iconUrls, projectUrls, reckScores] = await contract.getAllProjects();
       
@@ -46,111 +68,87 @@ export function useProjects() {
 
       formattedProjects.sort((a, b) => b.reckScore - a.reckScore);
       setProjects(formattedProjects);
-      
+      setError(null);
     } catch (err: any) {
       console.error('Error fetching projects:', err);
-      setError('Failed to fetch projects');
-      toast.error('Failed to fetch projects');
+      if (walletAddress) {
+        setError('Failed to fetch projects');
+      }
     } finally {
       setIsLoading(false);
     }
-  }, [getContract]);
+  }, [getContract, walletAddress]);
+
+  const voteForProject = useCallback(async (projectId: string) => {
+    if (!walletAddress) return;
+
+    try {
+      const contract = await getContract(true);
+      if (!contract) return;
+      
+      const tx = await contract.increaseReckScore(projectId);
+      await tx.wait();
+      await fetchProjects();
+    } catch (err: any) {
+      console.error('Error voting for project:', err);
+      if (err.code === 'ACTION_REJECTED') {
+        setError('Transaction rejected');
+      } else {
+        setError('Failed to vote for project');
+      }
+      throw err;
+    }
+  }, [getContract, fetchProjects, walletAddress]);
 
   const addProject = useCallback(async (name: string, description: string) => {
+    if (!walletAddress) return;
+    
     setIsSubmitting(true);
     try {
       const contract = await getContract(true);
+      if (!contract) return;
+      
       const tx = await contract.addProject(name, description);
-      
-      await toast.promise(tx.wait(), {
-        loading: 'Adding project...',
-        success: 'Project added successfully!',
-        error: 'Failed to add project'
-      });
-      
+      await tx.wait();
       await fetchProjects();
     } catch (err: any) {
       console.error('Error adding project:', err);
       if (err.code === 'ACTION_REJECTED') {
-        toast.error('Transaction rejected');
+        setError('Transaction rejected');
       } else if (err.message?.includes('ProjectAlreadyExists')) {
-        toast.error('A project with this name already exists');
+        setError('A project with this name already exists');
       } else {
-        toast.error('Failed to add project');
+        setError('Failed to add project');
       }
       throw err;
     } finally {
       setIsSubmitting(false);
     }
-  }, [getContract, fetchProjects]);
-
-  const voteForProject = useCallback(async (projectId: string) => {
-    try {
-      const contract = await getContract(true);
-      const tx = await contract.increaseReckScore(projectId);
-      
-      await toast.promise(tx.wait(), {
-        loading: 'Recording vote...',
-        success: 'Vote recorded successfully!',
-        error: 'Failed to record vote'
-      });
-      
-      await fetchProjects();
-    } catch (err: any) {
-      console.error('Error voting for project:', err);
-      if (err.code === 'ACTION_REJECTED') {
-        toast.error('Transaction rejected');
-      } else {
-        toast.error('Failed to vote for project');
-      }
-      throw err;
-    }
-  }, [getContract, fetchProjects]);
+  }, [getContract, fetchProjects, walletAddress]);
 
   useEffect(() => {
     let mounted = true;
-    let contract: ethers.Contract | null = null;
 
-    const setup = async () => {
-      try {
-        contract = await getContract();
-        if (!contract || !mounted) return;
-        
-        contract.on('ProjectAdded', () => {
-          if (mounted) {
-            toast.success('New project added!');
-            fetchProjects();
-          }
-        });
-        
-        contract.on('ReckScoreIncreased', () => {
-          if (mounted) {
-            fetchProjects();
-          }
-        });
-
-        await fetchProjects();
-      } catch (err) {
-        console.error('Failed to setup contract:', err);
-      }
-    };
-
-    setup();
+    if (walletAddress) {
+      checkIsCorrectNetwork().then(isCorrect => {
+        if (mounted && isCorrect) {
+          fetchProjects();
+        }
+      });
+    }
 
     return () => {
       mounted = false;
-      if (contract) {
-        contract.removeAllListeners();
-      }
     };
-  }, [getContract, fetchProjects]);
+  }, [walletAddress, fetchProjects]);
 
+  // Return all the values and functions
   return {
     projects,
     isLoading,
     error,
-    voteForProject,
-    addProject,
     isSubmitting,
+    voteForProject: voteForProject,
+    addProject: addProject
   };
 }
